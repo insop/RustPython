@@ -442,9 +442,11 @@ jobs:
 
       - name: install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - uses: browser-actions/setup-geckodriver@01983cba585474556f36f12da47225cd94b330b9
-        with:
-          geckodriver-version: '0.36.0'
+      - name: install geckodriver
+        run: |
+          wget https://github.com/mozilla/geckodriver/releases/download/v0.36.0/geckodriver-v0.36.0-linux64.tar.gz
+          mkdir geckodriver
+          tar -xzf geckodriver-v0.36.0-linux64.tar.gz -C geckodriver
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -460,6 +462,8 @@ jobs:
           cache-dependency-path: "wasm/demo/package-lock.json"
       - name: run test
         run: |
+          driver_path="$(pwd)/../../geckodriver"
+          export PATH="$PATH:${driver_path}"
           npm install
           npm run test
         env:
