@@ -442,7 +442,7 @@ jobs:
 
       - name: install wasm-pack
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-      - uses: browser-actions/setup-geckodriver@abea85e42a1a4daaad52810b92e47afbc4e1eec7  # v0.4
+      - uses: browser-actions/setup-geckodriver@01983cba585474556f36f12da47225cd94b330b9
         with:
           geckodriver-version: '0.36.0'
 
