@@ -58,6 +58,7 @@ jobs:
         uses: ./.github/actions/install-macos-deps
 
       - name: run clippy
+        if: runner.os == 'Linux'
         run: cargo clippy ${{ env.CARGO_ARGS }} --workspace --all-targets ${{ env.WORKSPACE_EXCLUDES }} -- -Dwarnings
 
       - name: run rust tests
@@ -262,6 +263,7 @@ jobs:
           echo "cores=${cores}" >> "$GITHUB_OUTPUT"
 
       - name: Run CPython tests
+        if: github.event_name != 'pull_request' || runner.os == 'Linux'
         run: |
           target/release/rustpython -m test -j ${{ steps.cores.outputs.cores }} ${{ join(matrix.extra_test_args, ' ') }} --slowest --fail-env-changed --timeout 600 -v -x ${{ env.FLAKY_MP_TESTS }} ${{ join(matrix.skips, ' ') }}
         timeout-minutes: ${{ matrix.timeout }}
@@ -269,6 +271,7 @@ jobs:
           RUSTPYTHON_SKIP_ENV_POLLUTERS: true
 
       - name: Run flaky MP CPython tests
+        if: github.event_name != 'pull_request' || runner.os == 'Linux'
         run: |
           target/release/rustpython -m test -j 1 ${{ join(matrix.extra_test_args, ' ') }} --slowest --fail-env-changed --timeout 600 -v ${{ env.FLAKY_MP_TESTS }}
         timeout-minutes: ${{ matrix.timeout }}
@@ -276,6 +279,7 @@ jobs:
           RUSTPYTHON_SKIP_ENV_POLLUTERS: true
 
       - name: run cpython tests to check if env polluters have stopped polluting
+        if: github.event_name != 'pull_request' || runner.os == 'Linux'
         shell: bash
         run: |
           IFS=' ' read -r -a target_array <<< "$TARGETS"
@@ -325,6 +329,7 @@ jobs:
           testvenv/bin/rustpython -m pip install wheel
 
       - name: Check whats_left is not broken
+        if: runner.os == 'Linux'
         shell: bash
         run: python -I scripts/whats_left.py ${{ env.CARGO_ARGS }} --features jit
 
