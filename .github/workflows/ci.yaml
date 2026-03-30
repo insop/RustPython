@@ -29,6 +29,9 @@ env:
   PYTHON_VERSION: "3.14.3"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_LIB_DIR: C:\Program Files\OpenSSL\lib\VC\x64\MD
   X86_64_PC_WINDOWS_MSVC_OPENSSL_INCLUDE_DIR: C:\Program Files\OpenSSL\include
+  # CI: disable thin LTO for faster release builds (saves ~2-4 min per release build).
+  # Full LTO is only needed for distribution binaries (release.yml), not for CI test runs.
+  CARGO_PROFILE_RELEASE_LTO: "false"
 
 jobs:
   rust_tests:
@@ -58,6 +61,13 @@ jobs:
 
       - name: Install macOS dependencies
         uses: ./.github/actions/install-macos-deps
+
+      - name: Use mold linker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y mold
+          echo CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
 
       - name: run clippy
         run: cargo clippy ${{ env.CARGO_ARGS }} --workspace --all-targets ${{ env.WORKSPACE_EXCLUDES }} -- -Dwarnings
@@ -235,6 +245,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Use mold linker
+        run: |
+          sudo apt-get install -y mold
+          echo CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
+
       - name: build rustpython
         run: cargo build --release --verbose --features=threading,jit ${{ env.CARGO_ARGS }}
 
@@ -281,7 +297,7 @@ jobs:
 
       - name: Check whats_left is not broken
         shell: bash
-        run: python -I scripts/whats_left.py ${{ env.CARGO_ARGS }} --features jit
+        run: python -I scripts/whats_left.py ${{ env.CARGO_ARGS }} --features threading,jit
 
   # Full cross-platform cpython tests: only on push/merge/nightly, not on PRs.
   # macOS runners are billed at 10x Linux rate, so deferring these saves significant cost.
