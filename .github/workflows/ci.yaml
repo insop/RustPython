@@ -5,6 +5,8 @@ on:
     types: [unlabeled, opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * *' # nightly full suite
 
 name: CI
 
@@ -27,6 +29,9 @@ env:
   PYTHON_VERSION: "3.14.3"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_LIB_DIR: C:\Program Files\OpenSSL\lib\VC\x64\MD
   X86_64_PC_WINDOWS_MSVC_OPENSSL_INCLUDE_DIR: C:\Program Files\OpenSSL\include
+  # CI: disable thin LTO for faster release builds (saves ~2-4 min per release build).
+  # Full LTO is only needed for distribution binaries (release.yml), not for CI test runs.
+  CARGO_PROFILE_RELEASE_LTO: "false"
 
 jobs:
   rust_tests:
@@ -38,7 +43,7 @@ jobs:
     timeout-minutes: 45
     strategy:
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-2025]
+        os: [macos-15, ubuntu-latest, windows-2025]
       fail-fast: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -56,6 +61,13 @@ jobs:
 
       - name: Install macOS dependencies
         uses: ./.github/actions/install-macos-deps
+
+      - name: Use mold linker
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y mold
+          echo CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
 
       - name: run clippy
         run: cargo clippy ${{ env.CARGO_ARGS }} --workspace --all-targets ${{ env.WORKSPACE_EXCLUDES }} -- -Dwarnings
@@ -109,12 +121,11 @@ jobs:
   cargo_check:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip:ci') }}
     name: Ensure compilation on various targets
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include: 
-        - os: ubuntu-latest
-          targets:
+        include:
+        - targets:
             - aarch64-linux-android
             - i686-unknown-linux-gnu
             - i686-unknown-linux-musl
@@ -123,15 +134,10 @@ jobs:
           dependencies:
             gcc-multilib: true
             musl-tools: true
-        - os: ubuntu-latest
-          targets:
+        - targets:
             - aarch64-unknown-linux-gnu
           dependencies:
             gcc-aarch64-linux-gnu: true # conflict with `gcc-multilib`
-        - os: macos-latest
-          targets:
-            - aarch64-apple-ios
-            - x86_64-apple-darwin
       fail-fast: false
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -165,14 +171,6 @@ jobs:
           ndk-version: r27
           add-to-path: true
 
-      # - name: Prepare repository for redox compilation
-      #   run: bash scripts/redox/uncomment-cargo.sh
-      # - name: Check compilation for Redox
-      #   uses: coolreader18/redoxer-action@v1
-      #   with:
-      #     command: check
-      #     args: --ignore-rust-version
-
       - name: Check compilation
         run: |
           for target in ${{ join(matrix.targets, ' ') }}
@@ -186,6 +184,35 @@ jobs:
           AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
           CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
 
+  # macOS cross-compile checks: deferred to non-PR events (macOS runners are 10x cost).
+  cargo_check_macos:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: Ensure compilation on macOS targets
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: v0-rust-aarch64-apple-ios-x86_64-apple-darwin
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          targets: aarch64-apple-ios,x86_64-apple-darwin
+          toolchain: stable
+
+      - name: Check compilation
+        run: |
+          for target in aarch64-apple-ios x86_64-apple-darwin
+          do
+            echo "::group::${target}"
+            cargo check --target $target ${{ env.CARGO_ARGS_NO_SSL }}
+            echo "::endgroup::"
+          done
+
   snippets_cpython:
     if: ${{ !contains(github.event.pull_request.labels.*.name, 'skip:ci') }}
     env:
@@ -198,23 +225,104 @@ jobs:
         test_multiprocessing_fork
         test_multiprocessing_forkserver
         test_multiprocessing_spawn
+    name: Run snippets and cpython tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Use mold linker
+        run: |
+          sudo apt-get install -y mold
+          echo CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang >> "$GITHUB_ENV"
+          echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
+
+      - name: build rustpython
+        run: cargo build --release --verbose --features=threading,jit ${{ env.CARGO_ARGS }}
+
+      - name: run snippets
+        run: python -m pip install -r requirements.txt && pytest -v
+        working-directory: ./extra_tests
+
+      - name: Detect available cores
+        id: cores
+        shell: bash
+        run: |
+          cores=$(python -c 'print(__import__("os").process_cpu_count())')
+          echo "cores=${cores}" >> "$GITHUB_OUTPUT"
+
+      - name: Run CPython tests
+        run: |
+          target/release/rustpython -m test -j ${{ steps.cores.outputs.cores }} -u all --slowest --fail-env-changed --timeout 600 -v -x ${{ env.FLAKY_MP_TESTS }}
+        timeout-minutes: 60
+        env:
+          RUSTPYTHON_SKIP_ENV_POLLUTERS: true
+
+      - name: Run flaky MP CPython tests
+        run: |
+          target/release/rustpython -m test -j 1 -u all --slowest --fail-env-changed --timeout 600 -v ${{ env.FLAKY_MP_TESTS }}
+        timeout-minutes: 60
+        env:
+          RUSTPYTHON_SKIP_ENV_POLLUTERS: true
+
+      - name: check that --install-pip succeeds
+        run: |
+          mkdir site-packages
+          target/release/rustpython --install-pip ensurepip --user
+          target/release/rustpython -m pip install six
+
+      - name: Check that ensurepip succeeds.
+        run: |
+          target/release/rustpython -m ensurepip
+          target/release/rustpython -c "import pip"
+
+      - name: Check if pip inside venv is functional
+        run: |
+          target/release/rustpython -m venv testvenv
+          testvenv/bin/rustpython -m pip install wheel
+
+      - name: Check whats_left is not broken
+        shell: bash
+        run: python -I scripts/whats_left.py ${{ env.CARGO_ARGS }} --features threading,jit
+
+  # Full cross-platform cpython tests: only on push/merge/nightly, not on PRs.
+  # macOS runners are billed at 10x Linux rate, so deferring these saves significant cost.
+  snippets_cpython_cross:
+    if: ${{ github.event_name != 'pull_request' }}
+    env:
+      RUST_BACKTRACE: full
+      FLAKY_MP_TESTS: >-
+        test_class
+        test_concurrent_futures
+        test_eintr
+        test_multiprocessing_fork
+        test_multiprocessing_forkserver
+        test_multiprocessing_spawn
     name: Run snippets and cpython tests
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
-        - os: macos-latest
+        - os: macos-15
           extra_test_args:
             - '-u all'
           env_polluting_tests: []
           skips: []
           timeout: 50
-        - os: ubuntu-latest
-          extra_test_args:
-            - '-u all'
-          env_polluting_tests: []
-          skips: []
-          timeout: 60
         - os: windows-2025
           extra_test_args: [] # TODO: Enable '-u all'
           env_polluting_tests: []
@@ -323,10 +431,6 @@ jobs:
         run: |
           target/release/rustpython -m venv testvenv
           testvenv/bin/rustpython -m pip install wheel
-
-      - name: Check whats_left is not broken
-        shell: bash
-        run: python -I scripts/whats_left.py ${{ env.CARGO_ARGS }} --features jit
 
   lint:
     name: Lint
